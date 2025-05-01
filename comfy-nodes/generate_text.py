@@ -38,8 +38,13 @@ if missing_deps:
 
 # Import utility functions (assuming they exist)
 from send_request import send_request, run_async # Keep non-streaming version if needed
-from llmtoolkit_utils import query_local_ollama_models
+from llmtoolkit_utils import query_local_ollama_models, ensure_ollama_server, ensure_ollama_model, get_api_key
 
+# Local transformers streaming (optional)
+try:
+    from transformers_provider import send_transformers_request_stream
+except ImportError:
+    send_transformers_request_stream = None  # type: ignore
 
 # --- NEW STREAMING REQUEST FUNCTION (Example for Ollama) ---
 # IMPORTANT: This needs to be adapted based on the actual API structure of the provider!
@@ -152,6 +157,14 @@ async def send_request_stream(
 
     if llm_provider.lower() == "ollama":
         # --- Ollama Specific Streaming Logic ---
+        if not ensure_ollama_server(base_ip, port):
+            logger.error("Ollama daemon unavailable and could not be started – aborting stream.")
+            yield "[Error: Ollama daemon unavailable]"
+            return
+
+        # Ensure requested model is present locally (will pull if missing)
+        ensure_ollama_model(llm_model, base_ip, port)
+
         url = f"http://{base_ip}:{port}/api/generate"
         headers = {"Content-Type": "application/json"}
         if llm_api_key: # Ollama doesn't typically use API keys this way, but include for consistency
@@ -230,8 +243,33 @@ async def send_request_stream(
             logger.error(f"An unexpected error occurred during streaming request: {e}", exc_info=True)
             yield f"[Unexpected Error: {e}]"
 
+    # ------------------------------------------------------------------
+    #  Local HuggingFace Transformers – streaming
+    # ------------------------------------------------------------------
+    if llm_provider.lower() in {"transformers", "hf", "local"} and send_transformers_request_stream is not None:
+        try:
+            async for chunk in send_transformers_request_stream(
+                base64_images=[],
+                base64_audio=[],
+                model=llm_model,
+                system_message=system_message,
+                user_message=user_message,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                repeat_penalty=repeat_penalty,
+                precision="fp16",
+            ):
+                if chunk:
+                    yield chunk
+        except Exception as e:
+            logger.error(f"Transformers streaming error: {e}", exc_info=True)
+            yield f"[Error: {e}]"
+        return
+
     # Existing fallback logic for other providers
-    if llm_provider.lower() not in ["ollama", "openai"]:
+    if llm_provider.lower() not in ["ollama", "openai", "transformers", "hf", "local"]:
         logger.warning(f"Streaming not implemented for provider '{llm_provider}'. Falling back to non-streaming.")
         try:
             full_response_data = await send_request(
@@ -261,11 +299,11 @@ async def send_request_stream(
 
 # --- Original Node (for reference or non-streaming use) ---
 class LLMToolkitTextGenerator:
-    DEFAULT_PROVIDER = "ollama"
-    _INSTALLED_OLLAMA_MODELS: List[str] = query_local_ollama_models()
-    _FALLBACK_MODELS: List[str] = ["gemma2:2b"] # Updated fallback
-    MODEL_LIST: List[str] = _INSTALLED_OLLAMA_MODELS or _FALLBACK_MODELS
-    DEFAULT_MODEL: str = MODEL_LIST[0]
+    DEFAULT_PROVIDER = "openai"
+    # For default OpenAI we will use GPT-4o mini (or 4o-mini) – alias may differ
+    DEFAULT_MODEL: str = "gpt-4o-mini"
+
+    MODEL_LIST: List[str] = [DEFAULT_MODEL]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -334,9 +372,17 @@ class LLMToolkitTextGenerator:
             if params.get("llm_provider"):
                 provider = str(params["llm_provider"]).lower()
                 if not params.get("llm_model"):
-                    PROVIDER_DEFAULTS = {"openai": "gpt-3.5-turbo-1106", "anthropic": "claude-3-opus-20240229"}
+                    PROVIDER_DEFAULTS = {"openai": "gpt-4o-mini", "anthropic": "claude-3-opus-20240229"}
                     fallback = PROVIDER_DEFAULTS.get(provider)
                     if fallback: params["llm_model"] = fallback
+
+            # Auto-fetch API key for OpenAI if missing/placeholder
+            if provider == "openai" and (not params.get("llm_api_key") or params["llm_api_key"] in {"", "1234", None}):
+                try:
+                    params["llm_api_key"] = get_api_key("OPENAI_API_KEY", "openai")
+                    logger.info("generate: Retrieved OpenAI API key via get_api_key helper.")
+                except ValueError as _e:
+                    logger.warning(f"generate: get_api_key failed – {_e}")
 
             log_params = {**params}
             if "llm_api_key" in log_params: log_params["llm_api_key"] = "****" if log_params["llm_api_key"] else "None"
@@ -400,12 +446,11 @@ class LLMToolkitTextGenerator:
 
 # --- NEW STREAMING NODE ---
 class LLMToolkitTextGeneratorStream:
-    DEFAULT_PROVIDER = "ollama"
-    # Use the same model discovery logic
-    _INSTALLED_OLLAMA_MODELS: List[str] = query_local_ollama_models()
-    _FALLBACK_MODELS: List[str] = ["gemma2:2b"] # Updated fallback
-    MODEL_LIST: List[str] = _INSTALLED_OLLAMA_MODELS or _FALLBACK_MODELS
-    DEFAULT_MODEL: str = MODEL_LIST[0]
+    DEFAULT_PROVIDER = "openai"
+    # For default OpenAI we will use GPT-4o mini (or 4o-mini) – alias may differ
+    DEFAULT_MODEL: str = "gpt-4o-mini"
+
+    MODEL_LIST: List[str] = [DEFAULT_MODEL]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -509,13 +554,17 @@ class LLMToolkitTextGeneratorStream:
                 if params.get("llm_provider"):
                     provider = str(params["llm_provider"]).lower()
                     if not params.get("llm_model"):
-                        PROVIDER_DEFAULTS = {
-                            "openai": "gpt-3.5-turbo-1106",
-                            "anthropic": "claude-3-opus-20240229",
-                            "ollama": self.DEFAULT_MODEL,
-                        }
+                        PROVIDER_DEFAULTS = {"openai": "gpt-4o-mini", "anthropic": "claude-3-opus-20240229"}
                         fallback = PROVIDER_DEFAULTS.get(provider)
                         params["llm_model"] = fallback or self.DEFAULT_MODEL
+
+                # Auto-fetch API key for OpenAI if missing/placeholder
+                if provider == "openai" and (not params.get("llm_api_key") or params["llm_api_key"] in {"", "1234", None}):
+                    try:
+                        params["llm_api_key"] = get_api_key("OPENAI_API_KEY", "openai")
+                        logger.info("generate_stream: Retrieved OpenAI API key via get_api_key helper.")
+                    except ValueError as _e:
+                        logger.warning(f"generate_stream: get_api_key failed – {_e}")
 
                 # --- End Parameter Processing ---
 

@@ -2396,3 +2396,130 @@ def choose_openai_size(width: int, height: int, model: str = "gpt-image-1") -> s
     except Exception as exc:
         logger.debug(f"choose_openai_size error: {exc}")
         return "1024x1024"
+
+# -----------------------------------------------------------------------------
+# Ollama daemon helpers (lazy loading)
+# -----------------------------------------------------------------------------
+
+_OLLAMA_SERVER_INITIALIZED: bool = False  # Module-level flag to prevent multiple spawns
+
+
+def _is_ollama_running(base_ip: str = "localhost", port: Union[str, int] = 11434) -> bool:
+    """Return True if the Ollama HTTP endpoint appears to be reachable."""
+    try:
+        url = f"http://{base_ip}:{port}/api/tags"
+        resp = requests.get(url, timeout=1)
+        if resp.status_code == 200:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def ensure_ollama_server(base_ip: str = "localhost", port: Union[str, int] = 11434) -> bool:
+    """Ensure the local Ollama server is running.
+
+    If the daemon is not reachable it will try to launch ``ollama serve`` in the
+    background.  The function waits a couple of seconds for the HTTP endpoint
+    to become available.  A best-effort approach is used so failure will merely
+    be logged and the caller can decide how to proceed.
+    """
+    global _OLLAMA_SERVER_INITIALIZED
+
+    # If we have already verified the server once during this Python session we
+    # assume it is still up.
+    if _OLLAMA_SERVER_INITIALIZED:
+        return True
+
+    if _is_ollama_running(base_ip, port):
+        _OLLAMA_SERVER_INITIALIZED = True
+        return True
+
+    # Not running – attempt to start.  Only try when talking to localhost.
+    if str(base_ip) not in {"127.0.0.1", "localhost"}:
+        logger.warning(
+            "Ollama endpoint %s:%s not reachable and base_ip is not local – will not attempt to start daemon.",
+            base_ip,
+            port,
+        )
+        return False
+
+    import shutil  # Local import to avoid top-level dependency for non-Ollama users
+    import subprocess
+    import time
+
+    ollama_exe = shutil.which("ollama")
+    if not ollama_exe:
+        logger.error("'ollama' command not found in PATH. Please install Ollama.")
+        return False
+
+    try:
+        logger.info("Starting Ollama daemon via 'ollama serve'…")
+        # Spawn detached process directing output to devnull to keep logs clean
+        subprocess.Popen(
+            [ollama_exe, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(2)  # Give the server a moment to bind the port
+    except Exception as exc:
+        logger.error("Failed to launch Ollama daemon: %s", exc)
+        return False
+
+    if _is_ollama_running(base_ip, port):
+        _OLLAMA_SERVER_INITIALIZED = True
+        logger.info("Ollama daemon is now running (lazy-started).")
+        return True
+
+    logger.error("Ollama daemon did not become responsive after launch attempt.")
+    return False
+
+
+def ensure_ollama_model(model_name: str, base_ip: str = "localhost", port: Union[str, int] = 11434) -> bool:
+    """Ensure *model_name* is present in the local Ollama repository.
+
+    If the model is not listed by the daemon this helper will attempt to pull
+    it using ``ollama pull <model>``.
+    """
+    if not model_name:
+        return True  # nothing to do
+
+    # Re-query models – ensure server is up first
+    if not ensure_ollama_server(base_ip, port):
+        return False
+
+    installed = query_local_ollama_models(base_ip, port)
+    if model_name in installed:
+        return True
+
+    import shutil, subprocess
+    logger.info("Model '%s' not found locally – attempting 'ollama pull'…", model_name)
+    ollama_exe = shutil.which("ollama")
+    if not ollama_exe:
+        logger.error("'ollama' command not found in PATH. Cannot pull model.")
+        return False
+    try:
+        # Use subprocess.run so we wait until pull finishes; capture minimal output
+        result = subprocess.run(
+            [ollama_exe, "pull", model_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.error("ollama pull failed with code %s: %s", result.returncode, result.stderr.strip())
+            return False
+        # Verify again
+        if model_name not in query_local_ollama_models(base_ip, port):
+            logger.error("Model '%s' still not present after pull. Giving up.", model_name)
+            return False
+        logger.info("Successfully pulled model '%s'.", model_name)
+        return True
+    except Exception as exc:
+        logger.error("Exception while pulling model '%s': %s", model_name, exc)
+        return False
+
+# -----------------------------------------------------------------------------
+# End of Ollama helpers
+# -----------------------------------------------------------------------------

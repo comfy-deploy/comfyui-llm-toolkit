@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import base64
+import os, sys  # Needed for dynamic path adjustment before importing transformers_provider
 from typing import List, Union, Optional, Dict, Any
 
 # Minimal imports for Ollama & OpenAI only
@@ -14,7 +15,7 @@ from openai_api import (
     edit_image,
     create_openai_compatible_embedding,
 )
-from llmtoolkit_utils import convert_images_for_api
+from llmtoolkit_utils import convert_images_for_api, ensure_ollama_server, ensure_ollama_model
 
 # Gemini helpers (OpenAI-compat layer)
 from gemini_api import (
@@ -30,6 +31,14 @@ try:
     import folder_paths  # type: ignore
 except ImportError:
     folder_paths = None
+
+# Ensure comfy-nodes directory is on sys.path so we can import transformers_provider
+_root_dir = os.path.dirname(os.path.abspath(__file__))
+_comfy_nodes_dir = os.path.join(_root_dir, "comfy-nodes")
+if _comfy_nodes_dir not in sys.path:
+    sys.path.insert(0, _comfy_nodes_dir)
+
+from transformers_provider import send_transformers_request  # NEW: local HF models
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -147,6 +156,15 @@ async def send_request(
         #  Ollama
         # ------------------------------------------------------------------
         if llm_provider == "ollama":
+            # Lazily start local Ollama daemon and pull model if necessary
+            if not ensure_ollama_server(base_ip, port):
+                err = "Ollama daemon is not running and could not be started."
+                logger.error(err)
+                return {"choices": [{"message": {"content": err}}]}
+
+            # Ensure the requested model is present locally
+            ensure_ollama_model(llm_model, base_ip, port)
+
             api_url = f"http://{base_ip}:{port}/api/chat"  
             logger.info(f"Constructed Ollama API URL: {api_url}")
             kwargs = dict(
@@ -264,6 +282,24 @@ async def send_request(
                 repeat_penalty=repeat_penalty,
                 tools=None,
                 tool_choice=None,
+            )
+
+        # ------------------------------------------------------------------
+        #  Local HuggingFace Transformers (offline)
+        # ------------------------------------------------------------------
+        if llm_provider in {"transformers", "hf", "local"}:
+            return await send_transformers_request(
+                base64_images=formatted_images,
+                base64_audio=[],  # TODO: support audio if needed
+                model=llm_model,
+                system_message=system_message,
+                user_message=user_message,
+                messages=messages or [],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                repeat_penalty=repeat_penalty,
+                precision="fp16",  # Could be param
             )
 
         return {"error": f"Unsupported llm_provider '{llm_provider}'"}
