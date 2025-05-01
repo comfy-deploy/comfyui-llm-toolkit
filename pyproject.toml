@@ -3,7 +3,7 @@ name = "llm-toolkit"
 description = "A custom node collection for integrating various LLM (Large Language Model) providers with ComfyUI."
 version = "1.0.0"
 license = {file = "LICENSE"}
-dependencies = [dependencies = [
+dependencies = [
     "aiohttp>=3.8.0",
     "pyyaml>=6.0",
     "python-dotenv>=0.20.0",
