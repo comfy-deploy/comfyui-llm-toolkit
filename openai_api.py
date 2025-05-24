@@ -118,14 +118,21 @@ async def send_openai_request(api_url, base64_images, model, system_message, use
         if tool_choice:
             data["tool_choice"] = tool_choice
 
+        # --- Sanitize debug output to avoid clogging logs with large base64 blobs ---
+        if logger.isEnabledFor(logging.DEBUG):
+            # Clone payload so we do not mutate the real one
+            _san = {**data}
+            # Replace potentially huge fields with short placeholders
+            if "messages" in _san:
+                _san["messages"] = f"[{len(_san['messages'])} messages]"
+            if base64_images:
+                _san["base64_images"] = f"[{len(base64_images)} base64 image(s) omitted]"
+            logger.debug(f"Request headers: {openai_headers}")
+            logger.debug(f"Request data (sanitized): {_san}")
 
         logger.info(f"Sending OpenAI request to {api_url} for model {model}")
         try:
             async with aiohttp.ClientSession() as session:
-                # Log the request before sending
-                logger.debug(f"Request headers: {openai_headers}")
-                logger.debug(f"Request data: {data}")
-                
                 async with session.post(api_url, headers=openai_headers, json=data) as response:
                     # Check status code before raising for status
                     if response.status != 200:
