@@ -25,6 +25,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Lazy loading for optional dependencies
+cv2 = None
+def get_cv2():
+    global cv2
+    if cv2 is None:
+        try:
+            import cv2 as _cv2
+            cv2 = _cv2
+        except ImportError:
+            logger.warning("cv2 not available. Video frame extraction disabled.")
+    return cv2
+
 class PromptManager:
     """
     Manages and structures prompt components (text, image, mask, paths)
@@ -43,19 +55,22 @@ class PromptManager:
         if TENSOR_SUPPORT:
             inputs["optional"]["image"] = ("IMAGE",)
             inputs["optional"]["mask"] = ("MASK",)
+            # Allow connecting video tensors (e.g., from LoadVideo nodes)
+            inputs["optional"]["video"] = ("IMAGE",)
         else:
              logger.warning("PromptManager: Torch/Numpy/PIL not found. IMAGE and MASK inputs disabled.")
 
         # Add path inputs (always available)
         inputs["optional"]["audio_path"] = ("STRING", {"multiline": False, "default": ""})
-        inputs["optional"]["file_path"] = ("STRING", {"multiline": False, "default": ""})
+        inputs["optional"]["file_path"] = ("STRING", {"multiline": False, "default": "", "placeholder": "/path/to/file1.pdf, /path/to/video.mp4"})
+        inputs["optional"]["url"]       = ("STRING", {"multiline": False, "default": "", "placeholder": "https://example.com, https://foo.bar/audio.mp3"})
 
         return inputs
 
     RETURN_TYPES = ("*",)
     RETURN_NAMES = ("context",)
     FUNCTION = "manage_prompt"
-    CATEGORY = "prompt_manager"
+    CATEGORY = "llm_toolkit"
 
     def manage_prompt(self, context: Optional[Dict[str, Any]] = None, **kwargs) -> Tuple[Dict[str, Any]]:
         """
@@ -85,36 +100,50 @@ class PromptManager:
         text_prompt = kwargs.get("text_prompt", "").strip()
         image_tensor = kwargs.get("image", None)
         mask_tensor = kwargs.get("mask", None)
+        video_tensor = kwargs.get("video", None)
         audio_path = kwargs.get("audio_path", "").strip()
-        file_path = kwargs.get("file_path", "").strip()
+        file_path_str = kwargs.get("file_path", "").strip()
+        url_str       = kwargs.get("url", "").strip()
 
         if text_prompt:
             prompt_config["text"] = text_prompt
             logger.debug(f"PromptManager: Added text_prompt (length: {len(text_prompt)}).")
 
-        # --- Handle IMAGE tensor or batch ---
-        if image_tensor is not None and TENSOR_SUPPORT:
-            logger.debug(f"PromptManager: Processing image tensor with shape: {image_tensor.shape}")
-            # If tensor is batch (B, H, W, C), iterate; else single image
-            if image_tensor.dim() == 4 and image_tensor.shape[0] > 1:
-                img_list = []
-                for idx in range(image_tensor.shape[0]):
-                    single_img = image_tensor[idx:idx+1]  # Keep batch dim for util
-                    b64 = tensor_to_base64(single_img, image_format="PNG")
+        # --- Helper to process tensor or list of tensors into b64 list ---
+        def _tensor_or_list_to_b64(tensor_or_list, max_items: int = 16):
+            """Return list of base64 strings given tensor or list of tensors."""
+            b64_list = []
+            if torch.is_tensor(tensor_or_list):
+                if tensor_or_list.dim() == 4 and tensor_or_list.shape[0] > 1:
+                    sample_count = min(tensor_or_list.shape[0], max_items)
+                    for idx in range(sample_count):
+                        b64 = tensor_to_base64(tensor_or_list[idx:idx+1], image_format="PNG")
+                        if b64:
+                            b64_list.append(b64)
+                else:
+                    b64 = tensor_to_base64(tensor_or_list, image_format="PNG")
                     if b64:
-                        img_list.append(b64)
-                if img_list:
-                    prompt_config["image_base64"] = img_list
-                    logger.debug(f"PromptManager: Added list of {len(img_list)} base64 images.")
-                else:
-                    logger.warning("PromptManager: Failed to convert batch images to base64.")
+                        b64_list.append(b64)
+            elif isinstance(tensor_or_list, list):
+                sample_items = tensor_or_list[:max_items]
+                for t in sample_items:
+                    if torch.is_tensor(t):
+                        # Ensure has batch dim
+                        if t.dim() == 3:
+                            t = t.unsqueeze(0)
+                        b64 = tensor_to_base64(t, image_format="PNG")
+                        if b64:
+                            b64_list.append(b64)
+            return b64_list
+
+        # --- Handle IMAGE input (single, list, or batch tensor) ---
+        if image_tensor is not None and TENSOR_SUPPORT:
+            imgs_b64 = _tensor_or_list_to_b64(image_tensor)
+            if imgs_b64:
+                prompt_config["image_base64"] = imgs_b64 if len(imgs_b64) > 1 else imgs_b64[0]
+                logger.debug(f"PromptManager: Added {len(imgs_b64)} image(s) to prompt_config.")
             else:
-                img_base64 = tensor_to_base64(image_tensor, image_format="PNG")
-                if img_base64:
-                    prompt_config["image_base64"] = img_base64
-                    logger.debug("PromptManager: Added image_base64.")
-                else:
-                    logger.warning("PromptManager: Failed to convert image tensor to base64.")
+                logger.warning("PromptManager: Failed to convert provided image(s) to base64.")
 
         # --- Handle MASK tensor or batch ---
         if mask_tensor is not None and TENSOR_SUPPORT:
@@ -161,13 +190,61 @@ class PromptManager:
                 else:
                     logger.warning("PromptManager: Failed to convert mask tensor to base64.")
 
+        # --- Handle VIDEO tensor/batch/list ---
+        # Video tensors from nodes (e.g., LoadVideo) are extracted to frames
+        # for APIs like OpenAI that only support images.
+        # This is different from video file paths which are kept intact.
+        if video_tensor is not None and TENSOR_SUPPORT:
+            logger.debug("PromptManager: Processing video tensor for frame extraction...")
+            # Extract frames at intervals (every 16th frame, max 5 frames)
+            extracted_frames = []
+            
+            if torch.is_tensor(video_tensor):
+                # Video tensor shape is typically [frames, H, W, C]
+                if video_tensor.dim() == 4:
+                    frame_count = video_tensor.shape[0]
+                    interval = 16
+                    max_frames = 5
+                    
+                    for i in range(0, min(frame_count, interval * max_frames), interval):
+                        frame = video_tensor[i:i+1]  # Keep batch dim
+                        b64 = tensor_to_base64(frame, image_format="JPEG")
+                        if b64:
+                            extracted_frames.append(b64)
+                    
+                    logger.debug(f"PromptManager: Extracted {len(extracted_frames)} frames from video tensor (every {interval}th frame).")
+                else:
+                    # Single frame or unexpected shape - treat as image
+                    b64 = tensor_to_base64(video_tensor, image_format="JPEG")
+                    if b64:
+                        extracted_frames.append(b64)
+            
+            if extracted_frames:
+                prompt_config["video_frames_base64"] = extracted_frames
+                logger.debug(f"PromptManager: Added {len(extracted_frames)} extracted video frame(s).")
+            else:
+                logger.warning("PromptManager: Failed to convert video input to base64.")
+
         if audio_path:
             prompt_config["audio_path"] = audio_path
             logger.debug(f"PromptManager: Added audio_path: {audio_path}")
 
-        if file_path:
-            prompt_config["file_path"] = file_path
-            logger.debug(f"PromptManager: Added file_path: {file_path}")
+        # --- Handle FILE PATHS (comma-separated) ---
+        # Note: Video files (.mp4) in file_paths are NOT extracted to frames
+        # because some APIs (Gemini, etc.) can process video files directly.
+        # Only video tensors from nodes get frame extraction.
+        if file_path_str:
+            paths = [p.strip() for p in file_path_str.split(",") if p.strip()]
+            if paths:
+                prompt_config["file_paths"] = paths if len(paths) > 1 else paths[0]
+                logger.debug(f"PromptManager: Added {len(paths)} file_path(s).")
+
+        # --- Handle URLS (comma-separated) ---
+        if url_str:
+            urls = [u.strip() for u in url_str.split(",") if u.strip()]
+            if urls:
+                prompt_config["urls"] = urls if len(urls) > 1 else urls[0]
+                logger.debug(f"PromptManager: Added {len(urls)} url(s).")
 
         # Update the main context with the (potentially updated) prompt_config
         if prompt_config: # Only add if not empty

@@ -66,7 +66,8 @@ async def send_request_stream(
     stop: Optional[List[str]] = None,
     keep_alive: Union[bool, str] = True,
     llm_api_key: Optional[str] = None,
-    timeout: int = 120 # Add a timeout for the connection
+    timeout: int = 120, # Add a timeout for the connection
+    base64_images: Optional[List[str]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Sends a streaming request to an LLM provider (Example for Ollama).
@@ -94,6 +95,7 @@ async def send_request_stream(
                 stop=stop,
                 keep_alive=keep_alive,
                 llm_api_key=llm_api_key,
+                base64_images=base64_images,
             ):
                 yield chunk
             return
@@ -108,8 +110,21 @@ async def send_request_stream(
             messages = []
             if system_message:
                 messages.append({"role": "system", "content": system_message})
-            if user_message:
-                messages.append({"role": "user", "content": user_message})
+
+            # Handle multimodal user content (text + images)
+            if base64_images:
+                content_blocks = []
+                if user_message:
+                    content_blocks.append({"type": "text", "text": user_message})
+                for img_b64 in base64_images:
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                    })
+                messages.append({"role": "user", "content": content_blocks})
+            else:
+                if user_message:
+                    messages.append({"role": "user", "content": user_message})
 
         payload = {
             "model": llm_model,
@@ -249,7 +264,7 @@ async def send_request_stream(
     if llm_provider.lower() in {"transformers", "hf", "local"} and send_transformers_request_stream is not None:
         try:
             async for chunk in send_transformers_request_stream(
-                base64_images=[],
+                base64_images=base64_images or [],
                 base64_audio=[],
                 model=llm_model,
                 system_message=system_message,
@@ -273,7 +288,7 @@ async def send_request_stream(
         logger.warning(f"Streaming not implemented for provider '{llm_provider}'. Falling back to non-streaming.")
         try:
             full_response_data = await send_request(
-                llm_provider=llm_provider, base_ip=base_ip, port=port, images=None, llm_model=llm_model,
+                llm_provider=llm_provider, base_ip=base_ip, port=port, images=base64_images, llm_model=llm_model,
                 system_message=system_message, user_message=user_message, messages=messages, seed=seed,
                 temperature=temperature, max_tokens=max_tokens, random=random, top_k=top_k, top_p=top_p,
                 repeat_penalty=repeat_penalty, stop=stop, keep_alive=keep_alive, llm_api_key=llm_api_key
@@ -330,6 +345,7 @@ class LLMToolkitTextGenerator:
         # We'll copy the parameter processing logic from the streaming version
         # for consistency, but it will call the non-streaming send_request.
         try:
+            # Base parameter defaults
             params = {
                 "llm_provider": self.DEFAULT_PROVIDER,
                 "llm_model": llm_model,
@@ -384,6 +400,51 @@ class LLMToolkitTextGenerator:
                 except ValueError as _e:
                     logger.warning(f"generate: get_api_key failed – {_e}")
 
+            # --- Prompt-Manager support ---------------------------------------------------
+            # If upstream PromptManager attached a prompt_config dict, use the data
+            prompt_cfg = None
+            if context is not None and isinstance(context, dict):
+                prompt_cfg = context.get("prompt_config")
+
+            if prompt_cfg and isinstance(prompt_cfg, dict):
+                # Override user prompt text if provided
+                if prompt_cfg.get("text"):
+                    params["user_message"] = prompt_cfg["text"]
+
+                # Collect images and video frames (already in base64 from PromptManager)
+                imgs = []
+                if prompt_cfg.get("image_base64"):
+                    img_val = prompt_cfg["image_base64"]
+                    if isinstance(img_val, str):
+                        imgs.extend([img_val])
+                    elif isinstance(img_val, list):
+                        imgs.extend(img_val)
+
+                # Add extracted video frames
+                if prompt_cfg.get("video_frames_base64"):
+                    vid_frames = prompt_cfg["video_frames_base64"]
+                    if isinstance(vid_frames, list):
+                        imgs.extend(vid_frames)
+                    else:
+                        imgs.append(vid_frames)
+
+                params["images"] = imgs if imgs else None
+
+                # Pass through file paths and URLs for APIs that support them
+                if prompt_cfg.get("file_paths"):
+                    params["file_paths"] = prompt_cfg["file_paths"]
+                    logger.debug(f"PromptManager: Passing file_paths to API (some APIs process videos/PDFs directly).")
+
+                if prompt_cfg.get("urls"):
+                    params["urls"] = prompt_cfg["urls"]
+                    logger.debug(f"PromptManager: Passing URLs to API.")
+
+                # Audio path remains separate
+                if prompt_cfg.get("audio_path"):
+                    params["audio_path"] = prompt_cfg["audio_path"]
+            else:
+                params["images"] = None
+
             log_params = {**params}
             if "llm_api_key" in log_params: log_params["llm_api_key"] = "****" if log_params["llm_api_key"] else "None"
             logger.info(f"[Non-Streaming] Making LLM request with params: {log_params}")
@@ -395,7 +456,7 @@ class LLMToolkitTextGenerator:
                         llm_provider=params["llm_provider"],
                         base_ip=params.get("base_ip", "localhost"),
                         port=params.get("port", "11434"),
-                        images=None,
+                        images=params.get("images"),
                         llm_model=params["llm_model"],
                         system_message=params["system_message"],
                         user_message=params["user_message"],
@@ -568,6 +629,51 @@ class LLMToolkitTextGeneratorStream:
 
                 # --- End Parameter Processing ---
 
+                # --- Prompt-Manager support ---------------------------------------------------
+                # If upstream PromptManager attached a prompt_config dict, use the data
+                prompt_cfg = None
+                if context is not None and isinstance(context, dict):
+                    prompt_cfg = context.get("prompt_config")
+
+                if prompt_cfg and isinstance(prompt_cfg, dict):
+                    # Override user prompt text if provided
+                    if prompt_cfg.get("text"):
+                        params["user_message"] = prompt_cfg["text"]
+
+                    # Collect images and video frames (already in base64 from PromptManager)
+                    imgs = []
+                    if prompt_cfg.get("image_base64"):
+                        img_val = prompt_cfg["image_base64"]
+                        if isinstance(img_val, str):
+                            imgs.extend([img_val])
+                        elif isinstance(img_val, list):
+                            imgs.extend(img_val)
+
+                    # Add extracted video frames
+                    if prompt_cfg.get("video_frames_base64"):
+                        vid_frames = prompt_cfg["video_frames_base64"]
+                        if isinstance(vid_frames, list):
+                            imgs.extend(vid_frames)
+                        else:
+                            imgs.append(vid_frames)
+
+                    params["images"] = imgs if imgs else None
+
+                    # Pass through file paths and URLs for APIs that support them
+                    if prompt_cfg.get("file_paths"):
+                        params["file_paths"] = prompt_cfg["file_paths"]
+                        logger.debug(f"PromptManager: Passing file_paths to API (some APIs process videos/PDFs directly).")
+
+                    if prompt_cfg.get("urls"):
+                        params["urls"] = prompt_cfg["urls"]
+                        logger.debug(f"PromptManager: Passing URLs to API.")
+
+                    # Audio path remains separate
+                    if prompt_cfg.get("audio_path"):
+                        params["audio_path"] = prompt_cfg["audio_path"]
+                else:
+                    params["images"] = None
+
                 log_params = {**params}
                 if "llm_api_key" in log_params:
                     log_params["llm_api_key"] = "****" if log_params["llm_api_key"] else "None"
@@ -597,6 +703,7 @@ class LLMToolkitTextGeneratorStream:
                     stop=params.get("stop"),
                     keep_alive=params.get("keep_alive", True),
                     llm_api_key=params.get("llm_api_key"),
+                    base64_images=params.get("images"),
                 )
 
                 async for chunk in stream_generator:
