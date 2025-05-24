@@ -445,8 +445,7 @@ class LLMToolkitTextGenerator:
             else:
                 params["images"] = None
 
-            log_params = {**params}
-            if "llm_api_key" in log_params: log_params["llm_api_key"] = "****" if log_params["llm_api_key"] else "None"
+            log_params = _sanitize_params_for_log(params)
             logger.info(f"[Non-Streaming] Making LLM request with params: {log_params}")
 
             try:
@@ -504,6 +503,22 @@ class LLMToolkitTextGenerator:
             error_output = {"error": error_message, "original_input": context}
             return {"ui": {"string": [error_message]}, "result": (error_output,)}
 
+# --- Helper to avoid dumping large base64 blobs to INFO log -----------------
+def _sanitize_params_for_log(d: dict) -> dict:
+    """Return a shallow copy with huge fields replaced by short placeholders."""
+    out = {}
+    for k, v in d.items():
+        if k in {"images", "video_frames", "base64_images"} and v:
+            # Strings or list → replace with length info
+            if isinstance(v, (list, tuple)):
+                out[k] = f"[{len(v)} item(s) base64 omitted]"
+            elif isinstance(v, str):
+                out[k] = "[base64 string omitted]"
+            else:
+                out[k] = "[data omitted]"
+        else:
+            out[k] = v
+    return out
 
 # --- NEW STREAMING NODE ---
 class LLMToolkitTextGeneratorStream:
@@ -674,9 +689,7 @@ class LLMToolkitTextGeneratorStream:
                 else:
                     params["images"] = None
 
-                log_params = {**params}
-                if "llm_api_key" in log_params:
-                    log_params["llm_api_key"] = "****" if log_params["llm_api_key"] else "None"
+                log_params = _sanitize_params_for_log(params)
                 logger.info(
                     f"[Streaming] Initiating LLM stream with params: {log_params} for node {unique_id}"
                 )
