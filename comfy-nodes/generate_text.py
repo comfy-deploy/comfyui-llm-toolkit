@@ -64,7 +64,7 @@ async def send_request_stream(
     top_p: float = 0.9,
     repeat_penalty: float = 1.1,
     stop: Optional[List[str]] = None,
-    keep_alive: Union[bool, str] = True,
+    keep_alive: Union[bool, str] = True, # For Ollama, can be a string like "5m"
     llm_api_key: Optional[str] = None,
     timeout: int = 120, # Add a timeout for the connection
     base64_images: Optional[List[str]] = None,
@@ -77,28 +77,7 @@ async def send_request_stream(
         # --- OpenAI Specific Streaming Logic ---
         if not llm_api_key:
             logger.error("OpenAI streaming requested but no API key supplied.")
-            async for chunk in send_request_stream(
-                llm_provider="openai_fallback_nonstream",
-                base_ip=base_ip,
-                port=port,
-                llm_model=llm_model,
-                system_message=system_message,
-                user_message=user_message,
-                messages=messages,
-                seed=seed,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                random=random,
-                top_k=top_k,
-                top_p=top_p,
-                repeat_penalty=repeat_penalty,
-                stop=stop,
-                keep_alive=keep_alive,
-                llm_api_key=llm_api_key,
-                base64_images=base64_images,
-            ):
-                yield chunk
-            return
+            raise ValueError("OpenAI API key is required for streaming.")
 
         openai_url = "https://api.openai.com/v1/chat/completions"
         headers = {
