@@ -2,8 +2,8 @@
 
 A custom node collection for integrating various LLM (Large Language Model) providers with ComfyUI.
 ![llmtoolkit_thum](https://github.com/user-attachments/assets/610a2135-3a03-4cc3-b75a-3ee44f70f0d8)
-
-## Features
+## NEW GENERAL IMAGE AND VIDEO CFGs
+<img width="1367" height="869" alt="image" src="https://github.com/user-attachments/assets/ed85c580-c981-4e36-be72-c4e00192391b" />
 
 ## Features
 - True Context-to-Context node connections one-input / one-output design
@@ -127,4 +127,5 @@ Run the included test script to verify your setup:
 cd /path/to/ComfyUI/custom_nodes/comfyui-llm-toolkit
 python test_js_integration.py
 ```
+
 
