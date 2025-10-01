@@ -37,15 +37,21 @@ const PROVIDER_MODELS = {
     ],
     "bfl": ["flux-kontext-max"],
     "suno": ["V3_5", "V4", "V4_5"],
-    "wavespeed": [
-        "wavespeed-ai/flux-kontext-dev-ultra-fast", "wavespeed-ai/flux-kontext-dev/multi-ultra-fast",
-        "bytedance/portrait", "bytedance/seededit-v3",
-        // Add video models
+"wavespeed": [
+        "wavespeed-ai/flux-kontext-dev-ultra-fast", "wavespeed-ai/flux-kontext-dev/multi-ultra-fast", "wavespeed-ai/hunyuan-image-3", "wavespeed-ai/qwen-image/edit-plus",
+        "bytedance/portrait", "bytedance/seededit-v3", "google/imagen4", "google/imagen4-fast", "google/imagen4-ultra",
+        "google/nano-banana/edit", "bytedance/dreamina-v3.1/text-to-image",
         "minimax/hailuo-02/t2v-standard", "minimax/hailuo-02/t2v-pro",
         "minimax/hailuo-02/i2v-pro", "minimax/hailuo-02/i2v-standard",
         "kwaivgi/kling-v2.1-i2v-standard", "kwaivgi/kling-v2.1-i2v-pro", "kwaivgi/kling-v2.1-i2v-master",
+        "kwaivgi/kling-v2.5-turbo-pro/image-to-video", "kwaivgi/kling-v2.5-turbo-pro/text-to-video",
+        "kwaivgi/kling-lipsync/audio-to-video", "kwaivgi/kling-lipsync/text-to-video",
+        "kwaivgi/kling-v1-ai-avatar-pro", "kwaivgi/kling-effects",
+        "google/veo3-fast/image-to-video", "google/veo3/image-to-video",
         "google/veo3-fast", "wavespeed-ai/veo2-t2v", "wavespeed-ai/veo2-i2v",
-    ],
+        "alibaba/wan-2.5/text-to-video", "alibaba/wan-2.5/text-to-video-fast",
+        "alibaba/wan-2.5/image-to-video", "alibaba/wan-2.5/image-to-video-fast"
+    ]
 };
 
 app.registerExtension({

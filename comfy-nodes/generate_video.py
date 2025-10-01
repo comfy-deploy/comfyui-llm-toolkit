@@ -19,6 +19,12 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from video_generation_capabilities import (
+    MANAGED_KEYS,
+    normalize_generation_config,
+    resolve_canonical_model,
+)
+
 try:
     from llmtoolkit_utils import get_api_key
 except ImportError:
@@ -81,7 +87,30 @@ class GenerateVideo:
                 ctx = {"passthrough_data": context}
 
         provider_cfg = ctx.get("provider_config", {})
+        if not isinstance(provider_cfg, dict):
+            provider_cfg = {}
+
         gen_cfg = ctx.get("generation_config", {})
+        if not isinstance(gen_cfg, dict):
+            gen_cfg = {}
+
+        model_hint = resolve_canonical_model(
+            provider_cfg.get("llm_model")
+            or gen_cfg.get("model_id")
+            or self.DEFAULT_MODEL
+        )
+        canonical_model, sanitized_cfg = normalize_generation_config(
+            model_hint,
+            existing=gen_cfg,
+        )
+
+        for key in list(gen_cfg.keys()):
+            if key in MANAGED_KEYS and key not in sanitized_cfg:
+                gen_cfg.pop(key)
+
+        gen_cfg.update(sanitized_cfg)
+        ctx["generation_config"] = gen_cfg
+        logger.debug("GenerateVideo normalized config for %s: %s", canonical_model, sanitized_cfg)
 
         # Determine provider name (default gemini)
         llm_provider = provider_cfg.get("provider_name", "gemini").lower()
@@ -166,7 +195,7 @@ class GenerateVideo:
                             pil_img.save(buffered, format="PNG")
                             buffered.seek(0)
 
-                            upload_url = "https://api.wavespeed.ai/api/v2/media/upload/binary"
+                            upload_url = "https://api.wavespeed.ai/api/v3/media/upload/binary"
                             files = {"file": ("image.png", buffered, "image/png")}
                             up_resp = requests.post(upload_url, headers={"Authorization": f"Bearer {api_key}"}, files=files, timeout=60)
                             if up_resp.status_code == 200:
@@ -308,7 +337,7 @@ class GenerateVideo:
             return (ctx, "")
 
         aspect_ratio = gen_cfg.get("aspect_ratio", "16:9")
-        person_generation = gen_cfg.get("person_generation", "dont_allow")
+        person_generation = gen_cfg.get("person_generation", "allow_adult")
         
         # Map unsupported "allow_all" to "allow_adult" for backward compatibility
         if person_generation == "allow_all":
@@ -316,7 +345,7 @@ class GenerateVideo:
             person_generation = "allow_adult"
             
         number_of_videos = int(gen_cfg.get("number_of_videos", 1))
-        duration_seconds = int(gen_cfg.get("duration_seconds", 6))
+        duration_seconds = int(gen_cfg.get("duration_seconds", 8))
         negative_prompt = gen_cfg.get("negative_prompt", "")
         enhance_prompt = bool(gen_cfg.get("enhance_prompt", True))
 

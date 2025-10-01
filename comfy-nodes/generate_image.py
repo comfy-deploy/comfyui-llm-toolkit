@@ -20,7 +20,15 @@ try:
     # Import new Gemini image generation functions
     from api.gemini_image_api import send_gemini_image_generation_unified
     # Import new WaveSpeed image generation functions
-    from api.wavespeed_image_api import send_wavespeed_image_edit_request, send_wavespeed_seedream_request
+    from api.wavespeed_image_api import (
+        send_wavespeed_image_edit_request,
+        send_wavespeed_seedream_request,
+        send_wavespeed_hunyuan_request,
+        send_wavespeed_qwen_edit_plus_request,
+        send_wavespeed_imagen4_request,
+        send_wavespeed_dreamina_request,
+        send_wavespeed_nano_banana_edit_request,
+    )
     # Import OpenRouter image generation
     from api.openrouter_api import send_openrouter_image_generation_request
 except ImportError:
@@ -32,7 +40,15 @@ except ImportError:
         from send_request import run_async
         from api.openai_api import send_openai_image_generation_request
         from api.gemini_image_api import send_gemini_image_generation_unified
-        from api.wavespeed_image_api import send_wavespeed_image_edit_request, send_wavespeed_seedream_request
+        from api.wavespeed_image_api import (
+            send_wavespeed_image_edit_request,
+            send_wavespeed_seedream_request,
+            send_wavespeed_hunyuan_request,
+            send_wavespeed_qwen_edit_plus_request,
+            send_wavespeed_imagen4_request,
+            send_wavespeed_dreamina_request,
+            send_wavespeed_nano_banana_edit_request,
+        )
     except ImportError:
         logging.error("Failed to import required modules for generate_image.py")
         TENSOR_SUPPORT = False
@@ -286,13 +302,18 @@ A stunning, professional-quality portrait of a character with rainbow-colored sh
                 edit_mode = False
                 variation_mode = False
         
-        if llm_provider == "wavespeed" and llm_model in {"bytedance/seededit-v3", "bytedance/portrait"}:
-             if mode != "edit":
-                  logger.warning(f"{llm_model} only supports 'edit' mode. Forcing 'edit' mode.")
-                  mode = "edit"
-                  edit_mode = True
-                  variation_mode = False
+        if llm_provider == "wavespeed" and llm_model in {"bytedance/seededit-v3", "bytedance/portrait", "wavespeed-ai/qwen-image/edit-plus"}:
+            if mode != "edit":
+                logger.warning(f"{llm_model} only supports 'edit' mode. Forcing 'edit' mode.")
+                mode = "edit"
+                edit_mode = True
+                variation_mode = False
 
+        if llm_provider == "wavespeed" and llm_model == "wavespeed-ai/hunyuan-image-3" and (edit_mode or variation_mode):
+            logger.warning("wavespeed-ai/hunyuan-image-3 only supports 'generate' mode. Forcing 'generate'.")
+            mode = "generate"
+            edit_mode = False
+            variation_mode = False
 
         # If in edit mode with image input and no explicit size passed, choose size based on image dims
         if edit_mode and primary_image_b64 and not size:
@@ -506,6 +527,27 @@ A stunning, professional-quality portrait of a character with rainbow-colored sh
                                 seed=seed,
                             )
                         )
+                elif llm_model == "wavespeed-ai/qwen-image/edit-plus":
+                    images_to_pass = [img for img in all_images_b64 if img]
+                    if not images_to_pass:
+                        error_message = "Qwen Image Edit Plus requires at least one input image."
+                    else:
+                        if len(images_to_pass) > 3:
+                            logger.warning("Qwen Image Edit Plus supports up to 3 reference images. Truncating list.")
+                            images_to_pass = images_to_pass[:3]
+                        logger.info("Calling WaveSpeed Qwen Image Edit Plus...")
+                        raw_api_response = run_async(
+                            send_wavespeed_qwen_edit_plus_request(
+                                api_key=api_key,
+                                model=llm_model,
+                                prompt=prompt_text,
+                                images_base64=images_to_pass,
+                                size=generation_config.get("size"),
+                                seed=generation_config.get("seed", -1),
+                                output_format=generation_config.get("output_format")
+                            )
+                        )
+
                 elif llm_model in {
                     "wavespeed-ai/flux-kontext-dev/multi-ultra-fast",
                     "wavespeed-ai/flux-kontext-dev-ultra-fast"
@@ -541,9 +583,24 @@ A stunning, professional-quality portrait of a character with rainbow-colored sh
                         }
                         logger.info(f"Calling WaveSpeed Flux model ({llm_model}) with mode: {mode}...")
                         raw_api_response = run_async(send_wavespeed_flux_request(**params))
+                elif llm_model == "wavespeed-ai/hunyuan-image-3":
+                    if edit_mode or variation_mode:
+                        error_message = "Hunyuan Image 3.0 only supports generate mode."
+                    else:
+                        raw_api_response = run_async(
+                            send_wavespeed_hunyuan_request(
+                                api_key=api_key,
+                                model=llm_model,
+                                prompt=prompt_text,
+                                size=generation_config.get("size"),
+                                seed=generation_config.get("seed", -1),
+                                output_format=generation_config.get("output_format")
+                            )
+                        )
+
                 elif llm_model.startswith("bytedance/seedream"):
                     logger.info(f"Calling WaveSpeed Seedream model {llm_model}...")
-                    
+
                     is_edit = "edit" in llm_model
                     if is_edit and not all_images_b64:
                         error_message = f"WaveSpeed model {llm_model} requires an input image."
@@ -557,6 +614,84 @@ A stunning, professional-quality portrait of a character with rainbow-colored sh
                                 size=generation_config.get("size"),
                                 seed=generation_config.get("seed", -1),
                                 max_images=generation_config.get("n", 1),
+                            )
+                        )
+                elif llm_model in {
+                    "google/imagen4",
+                    "google/imagen4-fast",
+                    "google/imagen4-ultra",
+                    "wavespeed/imagen4",
+                    "wavespeed/imagen4-fast",
+                    "wavespeed/imagen4-ultra",
+                }:
+                    if edit_mode or variation_mode:
+                        error_message = "Imagen 4 models only support generate mode."
+                    else:
+                        api_model = llm_model
+                        if api_model.startswith("wavespeed/imagen4"):
+                            suffix = api_model.replace("wavespeed/", "")
+                            api_model = f"google/{suffix}"
+
+                        raw_api_response = run_async(
+                            send_wavespeed_imagen4_request(
+                                api_key=api_key,
+                                model=api_model,
+                                prompt=prompt_text,
+                                aspect_ratio=generation_config.get("aspect_ratio"),
+                                resolution=generation_config.get("resolution"),
+                                num_images=generation_config.get("n", 1),
+                                seed=generation_config.get("seed", -1),
+                                negative_prompt=None,
+                            )
+                        )
+
+                elif llm_model in {
+                    "bytedance/dreamina-v3.1/text-to-image",
+                    "wavespeed/dreamina-v3.1",
+                }:
+                    if edit_mode or variation_mode:
+                        error_message = "Dreamina V3.1 only supports generate mode."
+                    else:
+                        api_model = (
+                            "bytedance/dreamina-v3.1/text-to-image"
+                            if llm_model == "wavespeed/dreamina-v3.1"
+                            else llm_model
+                        )
+                        raw_api_response = run_async(
+                            send_wavespeed_dreamina_request(
+                                api_key=api_key,
+                                model=api_model,
+                                prompt=prompt_text,
+                                size=generation_config.get("size"),
+                                seed=generation_config.get("seed", -1),
+                                prompt_expansion=generation_config.get(
+                                    "prompt_expansion",
+                                    generation_config.get("prompt_enhancement", True),
+                                ),
+                            )
+                        )
+
+                elif llm_model in {
+                    "google/nano-banana/edit",
+                    "wavespeed/nano-banana-edit",
+                }:
+                    if not edit_mode:
+                        error_message = "Nano Banana edit requires 'edit' mode."
+                    elif not primary_image_b64:
+                        error_message = "Nano Banana edit requires an input image."
+                    else:
+                        api_model = (
+                            "google/nano-banana/edit"
+                            if llm_model == "wavespeed/nano-banana-edit"
+                            else llm_model
+                        )
+                        raw_api_response = run_async(
+                            send_wavespeed_nano_banana_edit_request(
+                                api_key=api_key,
+                                model=api_model,
+                                prompt=prompt_text.strip() or None,
+                                image_base64=primary_image_b64,
+                                output_format=generation_config.get("output_format", "png"),
                             )
                         )
                 else:

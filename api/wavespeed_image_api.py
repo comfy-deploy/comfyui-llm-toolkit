@@ -337,4 +337,463 @@ async def send_wavespeed_seedream_request(
             except Exception as e:
                 return {"error": f"Polling failed: {str(e)}"}
 
-    return {"error": "Polling timed out after 120 seconds."} 
+    return {"error": "Polling timed out after 120 seconds."}
+
+
+async def send_wavespeed_hunyuan_request(
+    api_key: str,
+    model: str,
+    prompt: str,
+    size: Optional[str] = None,
+    seed: int = -1,
+    output_format: Optional[str] = None,
+    enable_sync_mode: bool = False,
+) -> Dict[str, Any]:
+    """Submit and poll a WaveSpeed Hunyuan Image 3 task."""
+    if not api_key:
+        raise ValueError("WaveSpeed API key is required.")
+    if not prompt:
+        raise ValueError("Prompt is required for Hunyuan Image generation.")
+
+    def _normalize_size(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        normalized = value.replace('x', '*').replace('X', '*')
+        return normalized
+
+    payload: Dict[str, Any] = {
+        "prompt": prompt,
+        "enable_base64_output": True,
+        "enable_sync_mode": enable_sync_mode,
+    }
+    normalized_size = _normalize_size(size)
+    if normalized_size:
+        payload["size"] = normalized_size
+    if seed is not None and seed != -1:
+        payload["seed"] = seed
+    if output_format:
+        payload["output_format"] = output_format
+
+    submit_url = f"https://api.wavespeed.ai/api/v3/{model}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_id = None
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(submit_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", {})
+            request_id = data.get("id")
+            if not request_id:
+                return {"error": "Unexpected submission response format.", "details": result}
+            logger.info("WaveSpeed Hunyuan task submitted. Request ID: %s", request_id)
+        except httpx.HTTPStatusError as e:
+            logger.error("WaveSpeed Hunyuan submission failed: %s - %s", e.response.status_code, e.response.text)
+            return {"error": f"HTTP {e.response.status_code}", "details": e.response.text}
+        except Exception as exc:
+            logger.error("Failed to submit WaveSpeed Hunyuan request", exc_info=True)
+            return {"error": str(exc)}
+
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
+        polling_headers = {"Authorization": f"Bearer {api_key}"}
+
+        for attempt in range(120):
+            try:
+                await asyncio.sleep(1)
+                poll_response = await client.get(result_url, headers=polling_headers)
+                poll_response.raise_for_status()
+                poll_result = poll_response.json().get("data", {})
+                status = poll_result.get("status")
+
+                if status == "completed":
+                    outputs = poll_result.get("outputs", [])
+                    if not outputs:
+                        return {"error": "Task completed but no outputs found."}
+                    b64_values = []
+                    for output in outputs:
+                        if "base64," in output:
+                            b64_values.append(output.split("base64,")[1])
+                        else:
+                            b64_values.append(output)
+                    return {"data": [{"b64_json": value} for value in b64_values]}
+                if status == "failed":
+                    error_msg = poll_result.get("error", "Unknown error.")
+                    return {"error": f"Task failed: {error_msg}"}
+            except httpx.HTTPStatusError as e:
+                return {"error": f"HTTP {e.response.status_code} while polling", "details": e.response.text}
+            except Exception as exc:
+                logger.error("Error polling WaveSpeed Hunyuan request", exc_info=True)
+                return {"error": f"Polling failed: {str(exc)}"}
+
+    return {"error": "Polling timed out after 120 seconds."}
+
+
+async def send_wavespeed_qwen_edit_plus_request(
+    api_key: str,
+    model: str,
+    prompt: str,
+    images_base64: list[str],
+    size: Optional[str] = None,
+    seed: int = -1,
+    output_format: Optional[str] = None,
+    enable_sync_mode: bool = False,
+) -> Dict[str, Any]:
+    """Submit and poll a WaveSpeed Qwen Image Edit Plus task."""
+    if not api_key:
+        raise ValueError("WaveSpeed API key is required.")
+    if not images_base64:
+        raise ValueError("At least one reference image is required for Qwen Image Edit Plus.")
+
+    def _normalize_size(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        return value.replace('x', '*').replace('X', '*')
+
+    payload: Dict[str, Any] = {
+        "prompt": prompt,
+        "images": [f"data:image/png;base64,{b64}" for b64 in images_base64],
+        "enable_base64_output": True,
+        "enable_sync_mode": enable_sync_mode,
+    }
+    normalized_size = _normalize_size(size)
+    if normalized_size:
+        payload["size"] = normalized_size
+    if seed is not None and seed != -1:
+        payload["seed"] = seed
+    if output_format:
+        payload["output_format"] = output_format
+
+    submit_url = f"https://api.wavespeed.ai/api/v3/{model}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_id = None
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(submit_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", {})
+            request_id = data.get("id")
+            if not request_id:
+                return {"error": "Unexpected submission response format.", "details": result}
+            logger.info("WaveSpeed Qwen Edit Plus task submitted. Request ID: %s", request_id)
+        except httpx.HTTPStatusError as e:
+            logger.error("WaveSpeed Qwen submission failed: %s - %s", e.response.status_code, e.response.text)
+            return {"error": f"HTTP {e.response.status_code}", "details": e.response.text}
+        except Exception as exc:
+            logger.error("Failed to submit WaveSpeed Qwen request", exc_info=True)
+            return {"error": str(exc)}
+
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
+        polling_headers = {"Authorization": f"Bearer {api_key}"}
+
+        for attempt in range(120):
+            try:
+                await asyncio.sleep(1)
+                poll_response = await client.get(result_url, headers=polling_headers)
+                poll_response.raise_for_status()
+                poll_result = poll_response.json().get("data", {})
+                status = poll_result.get("status")
+
+                if status == "completed":
+                    outputs = poll_result.get("outputs", [])
+                    if not outputs:
+                        return {"error": "Task completed but no outputs found."}
+                    b64_values = []
+                    for output in outputs:
+                        if "base64," in output:
+                            b64_values.append(output.split("base64,")[1])
+                        else:
+                            b64_values.append(output)
+                    return {"data": [{"b64_json": value} for value in b64_values]}
+                if status == "failed":
+                    error_msg = poll_result.get("error", "Unknown error.")
+                    return {"error": f"Task failed: {error_msg}"}
+            except httpx.HTTPStatusError as e:
+                return {"error": f"HTTP {e.response.status_code} while polling", "details": e.response.text}
+            except Exception as exc:
+                logger.error("Error polling WaveSpeed Qwen request", exc_info=True)
+                return {"error": f"Polling failed: {str(exc)}"}
+
+    return {"error": "Polling timed out after 120 seconds."}
+
+
+async def send_wavespeed_imagen4_request(
+    api_key: str,
+    model: str,
+    prompt: str,
+    aspect_ratio: Optional[str] = None,
+    resolution: Optional[str] = None,
+    num_images: int = 1,
+    seed: int = -1,
+    negative_prompt: Optional[str] = None,
+    enable_sync_mode: bool = False,
+) -> Dict[str, Any]:
+    """Submit and poll a WaveSpeed Imagen 4 generation task."""
+
+    if not api_key:
+        raise ValueError("WaveSpeed API key is required.")
+    if not prompt:
+        raise ValueError("Prompt is required for Imagen 4 generation.")
+
+    payload: Dict[str, Any] = {
+        "prompt": prompt,
+        "num_images": max(1, min(4, num_images)),
+        "enable_base64_output": True,
+        "enable_sync_mode": enable_sync_mode,
+    }
+
+    if aspect_ratio and aspect_ratio.lower() != "auto":
+        payload["aspect_ratio"] = aspect_ratio
+    if resolution and resolution.lower() != "auto":
+        payload["resolution"] = resolution.lower()
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    if seed is not None and seed != -1:
+        payload["seed"] = seed
+
+    submit_url = f"https://api.wavespeed.ai/api/v3/{model}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_id = None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            response = await client.post(submit_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", {})
+            request_id = data.get("id")
+            if not request_id:
+                return {"error": "Unexpected submission response format.", "details": result}
+            logger.info("WaveSpeed Imagen4 task submitted. Request ID: %s", request_id)
+        except httpx.HTTPStatusError as exc:
+            logger.error("WaveSpeed Imagen4 submission failed: %s - %s", exc.response.status_code, exc.response.text)
+            return {"error": f"HTTP {exc.response.status_code}", "details": exc.response.text}
+        except Exception as exc:
+            logger.error("Failed to submit WaveSpeed Imagen4 request", exc_info=True)
+            return {"error": str(exc)}
+
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
+        polling_headers = {"Authorization": f"Bearer {api_key}"}
+
+        for attempt in range(150):
+            try:
+                await asyncio.sleep(1)
+                poll_response = await client.get(result_url, headers=polling_headers)
+                poll_response.raise_for_status()
+                poll_result = poll_response.json().get("data", {})
+                status = poll_result.get("status")
+
+                if status == "completed":
+                    outputs = poll_result.get("outputs", [])
+                    if not outputs:
+                        return {"error": "Task completed but no outputs found."}
+                    images = []
+                    for output in outputs:
+                        if isinstance(output, str) and "base64," in output:
+                            images.append({"b64_json": output.split("base64,")[1]})
+                        elif isinstance(output, str) and output.strip():
+                            images.append({"url": output})
+                    if images:
+                        return {"data": images}
+                    return {"error": "Completed task but no usable outputs returned."}
+
+                if status == "failed":
+                    error_msg = poll_result.get("error", "Unknown error.")
+                    return {"error": f"Task failed: {error_msg}"}
+            except httpx.HTTPStatusError as exc:
+                return {"error": f"HTTP {exc.response.status_code} while polling", "details": exc.response.text}
+            except Exception as exc:
+                logger.error("Error polling WaveSpeed Imagen4 request", exc_info=True)
+                return {"error": f"Polling failed: {str(exc)}"}
+
+    return {"error": "Polling timed out after 150 seconds."}
+
+
+async def send_wavespeed_dreamina_request(
+    api_key: str,
+    model: str,
+    prompt: str,
+    size: Optional[str] = None,
+    seed: int = -1,
+    prompt_expansion: bool = True,
+    enable_sync_mode: bool = False,
+) -> Dict[str, Any]:
+    """Submit and poll a WaveSpeed Dreamina V3.1 generation task."""
+
+    if not api_key:
+        raise ValueError("WaveSpeed API key is required.")
+    if not prompt:
+        raise ValueError("Prompt is required for Dreamina generation.")
+
+    def _normalize_size(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        return value.replace("x", "*").replace("X", "*")
+
+    payload: Dict[str, Any] = {
+        "prompt": prompt,
+        "enable_prompt_expansion": bool(prompt_expansion),
+        "enable_base64_output": True,
+        "enable_sync_mode": enable_sync_mode,
+    }
+    normalized_size = _normalize_size(size)
+    if normalized_size:
+        payload["size"] = normalized_size
+    if seed is not None and seed != -1:
+        payload["seed"] = seed
+
+    submit_url = f"https://api.wavespeed.ai/api/v3/{model}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_id = None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            response = await client.post(submit_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", {})
+            request_id = data.get("id")
+            if not request_id:
+                return {"error": "Unexpected submission response format.", "details": result}
+            logger.info("WaveSpeed Dreamina task submitted. Request ID: %s", request_id)
+        except httpx.HTTPStatusError as exc:
+            logger.error("WaveSpeed Dreamina submission failed: %s - %s", exc.response.status_code, exc.response.text)
+            return {"error": f"HTTP {exc.response.status_code}", "details": exc.response.text}
+        except Exception as exc:
+            logger.error("Failed to submit WaveSpeed Dreamina request", exc_info=True)
+            return {"error": str(exc)}
+
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
+        polling_headers = {"Authorization": f"Bearer {api_key}"}
+
+        for attempt in range(150):
+            try:
+                await asyncio.sleep(1)
+                poll_response = await client.get(result_url, headers=polling_headers)
+                poll_response.raise_for_status()
+                poll_result = poll_response.json().get("data", {})
+                status = poll_result.get("status")
+
+                if status == "completed":
+                    outputs = poll_result.get("outputs", [])
+                    if not outputs:
+                        return {"error": "Task completed but no outputs found."}
+                    images = []
+                    for output in outputs:
+                        if isinstance(output, str) and "base64," in output:
+                            images.append({"b64_json": output.split("base64,")[1]})
+                        elif isinstance(output, str) and output.strip():
+                            images.append({"url": output})
+                    if images:
+                        return {"data": images}
+                    return {"error": "Completed task but no usable outputs returned."}
+
+                if status == "failed":
+                    error_msg = poll_result.get("error", "Unknown error.")
+                    return {"error": f"Task failed: {error_msg}"}
+            except httpx.HTTPStatusError as exc:
+                return {"error": f"HTTP {exc.response.status_code} while polling", "details": exc.response.text}
+            except Exception as exc:
+                logger.error("Error polling WaveSpeed Dreamina request", exc_info=True)
+                return {"error": f"Polling failed: {str(exc)}"}
+
+    return {"error": "Polling timed out after 150 seconds."}
+
+
+async def send_wavespeed_nano_banana_edit_request(
+    api_key: str,
+    model: str,
+    prompt: Optional[str],
+    image_base64: str,
+    output_format: str = "png",
+    enable_sync_mode: bool = False,
+) -> Dict[str, Any]:
+    """Submit and poll a WaveSpeed Nano Banana edit task."""
+
+    if not api_key:
+        raise ValueError("WaveSpeed API key is required.")
+    if not image_base64:
+        raise ValueError("An input image is required for Nano Banana edit requests.")
+
+    payload: Dict[str, Any] = {
+        "image": f"data:image/png;base64,{image_base64}",
+        "output_format": (output_format or "png").lower(),
+        "enable_base64_output": True,
+        "enable_sync_mode": enable_sync_mode,
+    }
+    if prompt:
+        payload["prompt"] = prompt
+
+    submit_url = f"https://api.wavespeed.ai/api/v3/{model}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    request_id = None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        try:
+            response = await client.post(submit_url, json=payload, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", {})
+            request_id = data.get("id")
+            if not request_id:
+                return {"error": "Unexpected submission response format.", "details": result}
+            logger.info("WaveSpeed Nano Banana task submitted. Request ID: %s", request_id)
+        except httpx.HTTPStatusError as exc:
+            logger.error("WaveSpeed Nano Banana submission failed: %s - %s", exc.response.status_code, exc.response.text)
+            return {"error": f"HTTP {exc.response.status_code}", "details": exc.response.text}
+        except Exception as exc:
+            logger.error("Failed to submit WaveSpeed Nano Banana request", exc_info=True)
+            return {"error": str(exc)}
+
+        result_url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
+        polling_headers = {"Authorization": f"Bearer {api_key}"}
+
+        for attempt in range(150):
+            try:
+                await asyncio.sleep(1)
+                poll_response = await client.get(result_url, headers=polling_headers)
+                poll_response.raise_for_status()
+                poll_result = poll_response.json().get("data", {})
+                status = poll_result.get("status")
+
+                if status == "completed":
+                    outputs = poll_result.get("outputs", [])
+                    if not outputs:
+                        return {"error": "Task completed but no outputs found."}
+                    images = []
+                    for output in outputs:
+                        if isinstance(output, str) and "base64," in output:
+                            images.append({"b64_json": output.split("base64,")[1]})
+                        elif isinstance(output, str) and output.strip():
+                            images.append({"url": output})
+                    if images:
+                        return {"data": images}
+                    return {"error": "Completed task but no usable outputs returned."}
+
+                if status == "failed":
+                    error_msg = poll_result.get("error", "Unknown error.")
+                    return {"error": f"Task failed: {error_msg}"}
+            except httpx.HTTPStatusError as exc:
+                return {"error": f"HTTP {exc.response.status_code} while polling", "details": exc.response.text}
+            except Exception as exc:
+                logger.error("Error polling WaveSpeed Nano Banana request", exc_info=True)
+                return {"error": f"Polling failed: {str(exc)}"}
+
+    return {"error": "Polling timed out after 150 seconds."}
